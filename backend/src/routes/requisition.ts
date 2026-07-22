@@ -19,13 +19,28 @@ const createSchema = z.object({
 requisitionRouter.post("/", async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
-    // 是否包含高危品类
+    // 是否包含高危品类（易制毒 / 易制爆 / 剧毒）
     const bottleIds = data.bottles.map((b) => b.bottleId);
     const bottles = await prisma.reagentBottle.findMany({ where: { id: { in: bottleIds } }, include: { chemical: true } });
-    const isHighRisk = bottles.some((b) =>
-      ["PRECURSOR_DRUG", "EXPLOSIVE_PRECURSOR", "HIGHLY_TOXIC"].includes(b.chemical.hazardClass),
-    );
+    // 需追加保卫处复核 + 主管领导审批的高危品类
+    const regulatedClasses = ["PRECURSOR_DRUG", "EXPLOSIVE_PRECURSOR", "HIGHLY_TOXIC"];
+    const hasRegulated = bottles.some((b) => regulatedClasses.includes(b.chemical.hazardClass));
+    // 是否含易制爆（额外需要保卫处复核 + 主管领导审批，无论如何都必须留痕）
+    const isExplosivePrecursor = bottles.some((b) => b.chemical.hazardClass === "EXPLOSIVE_PRECURSOR");
     const reqNo = genNo("REQ");
+    // 基础三级审批
+    const baseSteps = [
+      { stepName: "导师审核", status: "PENDING" as const },
+      { stepName: "项目负责人审核", status: "PENDING" as const },
+      { stepName: "危化品管理员审核", status: "PENDING" as const },
+    ];
+    // 高危品类追加保卫处复核 + 主管领导审批
+    const extraSteps = hasRegulated
+      ? [
+          { stepName: "保卫处复核", status: "PENDING" as const },
+          { stepName: "主管领导审批", status: "PENDING" as const },
+        ]
+      : [];
     const r = await prisma.requisition.create({
       data: {
         reqNo,
@@ -35,11 +50,7 @@ requisitionRouter.post("/", async (req, res, next) => {
         expectedTime: new Date(data.expectedTime),
         bottles: { create: data.bottles },
         approvals: {
-          create: [
-            { stepName: "导师审核", status: "PENDING" },
-            { stepName: "项目负责人审核", status: "PENDING" },
-            { stepName: "危化品管理员审核", status: isHighRisk ? "PENDING" : "PENDING" },
-          ],
+          create: [...baseSteps, ...extraSteps],
         },
       },
       include: { bottles: { include: { bottle: { include: { chemical: true } } } }, approvals: true },
@@ -49,7 +60,13 @@ requisitionRouter.post("/", async (req, res, next) => {
       action: "REQUISITION_CREATE",
       entityType: "requisition",
       entityId: r.id,
-      payload: { reqNo, isHighRisk, bottles: data.bottles },
+      payload: {
+        reqNo,
+        hasRegulated,
+        isExplosivePrecursor,
+        bottles: data.bottles,
+        approvalSteps: [...baseSteps, ...extraSteps].map((s) => s.stepName),
+      },
     });
     res.json(ok(r));
   } catch (e) {
