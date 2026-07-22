@@ -248,6 +248,10 @@ model RequisitionBottle {
 }
 
 // =================== 双人核验 ===================
+// 关键安全约束：userB 必须由本人独立登录后单独提交人脸/定位/录像等证据，
+// 平台不接收 userA 客户端代为上报的 userB 信息；只有当 userB 端独立确认后，
+// 才会触发电子锁具开启。原字段 locationLat/Lng/Desc/videoUrl 仍保留以兼容旧数据，
+// 语义上属于 userA 自报证据。
 
 model DualVerification {
   id            String   @id @default(uuid())
@@ -257,14 +261,27 @@ model DualVerification {
   userA         User     @relation("UserA", fields: [userAId], references: [id])
   userBId       String
   userB         User     @relation("UserB", fields: [userBId], references: [id])
+
+  // userA 端自报证据（由 userA 登录会话提交）
   locationLat   Float?
   locationLng   Float?
   locationDesc  String?
   videoUrl      String?
+  userAClientIp String?
+
+  // userB 端自报证据（必须由 userB 独立登录后调用确认接口提交，userA 不可代填）
+  userBLocationLat  Float?
+  userBLocationLng  Float?
+  userBLocationDesc String?
+  userBVideoUrl     String?
+  userBConfirmedAt  DateTime?
+  userBClientIp     String?
+
   checkInAt     DateTime @default(now())
   cabinetOpenedAt DateTime?
   cabinetClosedAt DateTime?
-  result        String   // PASS / FAIL
+  // result 语义：null = 已由 userA 发起，等待 userB 独立确认；PASS = 双方均确认通过；FAIL = 任一方失败
+  result        String?
   remark        String?
 }
 
