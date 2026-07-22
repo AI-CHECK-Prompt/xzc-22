@@ -1,0 +1,385 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =================== 基础数据 ===================
+
+model Organization {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  shortName   String?
+  type        OrgType
+  parentId    String?
+  parent      Organization?  @relation("OrgTree", fields: [parentId], references: [id])
+  children    Organization[] @relation("OrgTree")
+  contact     String?
+  address     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       User[]
+  bottles     ReagentBottle[]
+  buckets     WasteBucket[]
+}
+
+enum OrgType {
+  UNIVERSITY
+  DEPARTMENT
+  LABORATORY
+  STORAGE
+}
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  passwordHash  String
+  fullName      String
+  email         String?
+  phone         String?
+  role          UserRole
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id])
+  idCardNo      String?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  procurementPlans ProcurementPlan[]
+  requisitions     Requisition[]
+  dualVerificationsA DualVerification[] @relation("UserA")
+  dualVerificationsB DualVerification[] @relation("UserB")
+  usageLogs        UsageLog[]
+  emptyBottleOps   EmptyBottleOp[]
+  auditEvents      AuditEvent[]
+  approvals        ApprovalStep[]
+}
+
+enum UserRole {
+  ADMIN
+  EQUIPMENT_SECRETARY
+  MENTOR
+  PROJECT_LEAD
+  HAZMAT_ADMIN
+  RESEARCHER
+  SECURITY_OFFICER
+  RESEARCH_DEPT
+  DEPT_LEAD
+  EXTERNAL_AUDITOR
+}
+
+// =================== 化学品主数据 ===================
+
+model Chemical {
+  id              String   @id @default(uuid())
+  casNo           String   @unique
+  name            String
+  nameEn          String?
+  formula         String?
+  hazardClass     HazardClass
+  storageClass    String
+  purchaseLimit   Float?   // 强制限量（g 或 mL）
+  monthlyLimit    Float?   // 月度上限
+  unit            String   @default("mL")
+  description     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  bottles         ReagentBottle[]
+  procurementItems ProcurementItem[]
+}
+
+enum HazardClass {
+  PRECURSOR_DRUG      // 易制毒
+  EXPLOSIVE_PRECURSOR // 易制爆
+  HIGHLY_TOXIC        // 剧毒
+  CORROSIVE
+  FLAMMABLE
+  OXIDIZER
+  REACTIVE
+  GENERAL
+}
+
+// =================== 试剂瓶 / 追溯码 ===================
+
+model ReagentBottle {
+  id            String   @id @default(uuid())
+  traceCode     String   @unique   // 唯一追溯码（QR + RFID 兼容）
+  rfidTag       String?  @unique
+  chemicalId    String
+  chemical      Chemical @relation(fields: [chemicalId], references: [id])
+  batchNo       String
+  supplier      String
+  manufactureDate DateTime
+  expireDate    DateTime?
+  inspectionReport String?  // 检验报告路径
+  initialQty    Float
+  remainingQty  Float
+  unit          String
+  status        BottleStatus @default(IN_STORAGE)
+  locationOrgId String
+  locationOrg   Organization @relation(fields: [locationOrgId], references: [id])
+  cabinet       String?
+  enteredAt     DateTime @default(now())
+  lastUsedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  usageLogs     UsageLog[]
+}
+
+enum BottleStatus {
+  IN_STORAGE
+  RESERVED
+  IN_USE
+  DEPLETED
+  RECYCLING
+  DESTROYED
+}
+
+// =================== 采购计划 ===================
+
+model ProcurementPlan {
+  id            String   @id @default(uuid())
+  planNo        String   @unique
+  departmentId  String
+  applicantId   String
+  applicant     User     @relation(fields: [applicantId], references: [id])
+  month         String   // 2026-07
+  status        PlanStatus @default(DRAFT)
+  totalAmount   Float    @default(0)
+  remark        String?
+  approvals     ApprovalStep[]
+  items         ProcurementItem[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+enum PlanStatus {
+  DRAFT
+  SECRETARY_SUBMITTED
+  RESEARCH_APPROVED
+  SECURITY_APPROVED
+  REJECTED
+  PURCHASING
+  COMPLETED
+}
+
+model ProcurementItem {
+  id            String   @id @default(uuid())
+  planId        String
+  plan          ProcurementPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  chemicalId    String
+  chemical      Chemical @relation(fields: [chemicalId], references: [id])
+  requestedQty  Float
+  suggestedQty  Float
+  approvedQty   Float?
+  unit          String
+  estPrice      Float
+  remark        String?
+}
+
+// =================== 审批流 ===================
+
+model ApprovalStep {
+  id            String   @id @default(uuid())
+  targetType    String   // procurement_plan / requisition
+  targetId      String
+  stepName      String
+  approverId    String?
+  approver      User?    @relation(fields: [approverId], references: [id])
+  status        ApprovalStatus @default(PENDING)
+  comment       String?
+  approvedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  plan          ProcurementPlan? @relation(fields: [planId], references: [id])
+  planId        String?
+  requisition   Requisition? @relation(fields: [requisitionId], references: [id])
+  requisitionId String?
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SKIPPED
+}
+
+// =================== 领用 ===================
+
+model Requisition {
+  id            String   @id @default(uuid())
+  reqNo         String   @unique
+  applicantId   String
+  applicant     User     @relation(fields: [applicantId], references: [id])
+  projectCode   String?
+  purpose       String
+  expectedTime  DateTime
+  status        ReqStatus @default(PENDING)
+  approvals     ApprovalStep[]
+  bottles       RequisitionBottle[]
+  verification  DualVerification?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+enum ReqStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  VERIFYING
+  COMPLETED
+  CANCELLED
+}
+
+model RequisitionBottle {
+  id            String   @id @default(uuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  bottleId      String
+  bottle        ReagentBottle @relation(fields: [bottleId], references: [id])
+  requestedQty  Float
+}
+
+// =================== 双人核验 ===================
+
+model DualVerification {
+  id            String   @id @default(uuid())
+  requisitionId String   @unique
+  requisition   Requisition @relation(fields: [requisitionId], references: [id])
+  userAId       String
+  userA         User     @relation("UserA", fields: [userAId], references: [id])
+  userBId       String
+  userB         User     @relation("UserB", fields: [userBId], references: [id])
+  locationLat   Float?
+  locationLng   Float?
+  locationDesc  String?
+  videoUrl      String?
+  checkInAt     DateTime @default(now())
+  cabinetOpenedAt DateTime?
+  cabinetClosedAt DateTime?
+  result        String   // PASS / FAIL
+  remark        String?
+}
+
+// =================== 使用登记 ===================
+
+model UsageLog {
+  id            String   @id @default(uuid())
+  bottleId      String
+  bottle        ReagentBottle @relation(fields: [bottleId], references: [id])
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  qty           Float
+  remaining     Float
+  experiment    String
+  content       String?
+  nextUse       String?
+  loggedAt      DateTime @default(now())
+  offline       Boolean  @default(false)
+  clientId      String?
+}
+
+// =================== 废液归集 ===================
+
+model WasteBucket {
+  id            String   @id @default(uuid())
+  bucketNo      String   @unique
+  ownerOrgId    String
+  ownerOrg      Organization @relation(fields: [ownerOrgId], references: [id])
+  category      WasteCategory
+  capacity      Float
+  currentVolume Float    @default(0)
+  status        BucketStatus @default(IDLE)
+  locatedAt     String
+  lastHandoffAt DateTime?
+  handoffs      WasteHandoff[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+enum WasteCategory {
+  ORGANIC
+  HEAVY_METAL
+  ACID
+  ALKALI
+  OXIDIZER
+  UNKNOWN
+}
+
+enum BucketStatus {
+  IDLE
+  FILLING
+  PENDING_HANDOVER
+  SEALED
+  DISPATCHED
+}
+
+model WasteHandoff {
+  id            String   @id @default(uuid())
+  bucketId      String
+  bucket        WasteBucket @relation(fields: [bucketId], references: [id])
+  fromOrgId     String
+  toOrgId       String
+  fromUserId    String
+  toUserId      String
+  weight        Float
+  category      WasteCategory
+  handoverAt    DateTime @default(now())
+  photoUrl      String?
+  signature     String?
+  remark        String?
+}
+
+// =================== 空瓶回收 ===================
+
+model EmptyBottleOp {
+  id            String   @id @default(uuid())
+  bottleId      String
+  bottle        ReagentBottle @relation(fields: [bottleId], references: [id])
+  operatorId    String
+  operator      User     @relation(fields: [operatorId], references: [id])
+  opType        EmptyOpType
+  weight        Float?
+  photoUrl      String?
+  note          String?
+  operatedAt    DateTime @default(now())
+}
+
+enum EmptyOpType {
+  WASHED
+  DESTROYED
+  RETURN_TO_VENDOR
+}
+
+// =================== 审计 ===================
+
+model AuditEvent {
+  id            String   @id @default(uuid())
+  actorId       String?
+  actor         User?    @relation(fields: [actorId], references: [id])
+  action        String
+  entityType    String
+  entityId      String
+  traceCode     String?
+  payload       Json?
+  occurredAt    DateTime @default(now())
+}
+
+// =================== 合规对接 ===================
+
+model ComplianceReport {
+  id            String   @id @default(uuid())
+  target        String   // public_security / ecology / education / security
+  period        String
+  payload       Json
+  status        String   // SUCCESS / FAILED
+  submittedAt   DateTime @default(now())
+  response      String?
+}
