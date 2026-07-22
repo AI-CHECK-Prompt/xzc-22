@@ -5,9 +5,19 @@ import { ok } from "../utils/response";
 import { genNo } from "../utils/code";
 import { writeAudit } from "../utils/audit";
 import { z } from "zod";
+import { UserRole } from "@prisma/client";
 
 export const requisitionRouter = Router();
 requisitionRouter.use(authRequired);
+
+// 步骤名称 -> 允许审批该步骤的角色集合（最小权限原则：仅对应角色可审批）
+const STEP_REQUIRED_ROLES: Record<string, UserRole[]> = {
+  "导师审核": ["MENTOR"],
+  "项目负责人审核": ["PROJECT_LEAD"],
+  "危化品管理员审核": ["HAZMAT_ADMIN"],
+  "保卫处复核": ["SECURITY_OFFICER"],
+  "主管领导审批": ["DEPT_LEAD", "RESEARCH_DEPT"],
+};
 
 const createSchema = z.object({
   projectCode: z.string().optional(),
@@ -113,13 +123,53 @@ requisitionRouter.post("/:id/approve", async (req, res, next) => {
     const { stepName, decision, comment } = req.body;
     const r = await prisma.requisition.findUnique({ where: { id: req.params.id }, include: { approvals: true } });
     if (!r) return res.status(404).json({ code: 404, message: "申请不存在" });
-    const step = r.approvals.find((a) => a.stepName === stepName && a.status === "PENDING");
-    if (!step) return res.status(400).json({ code: 400, message: "无可审批的步骤" });
+
+    // 1) 步骤必须存在且仍为 PENDING（防止重复审批）
+    const target = r.approvals.find((a) => a.stepName === stepName);
+    if (!target) return res.status(400).json({ code: 400, message: "审批步骤不存在" });
+    if (target.status !== "PENDING") {
+      return res.status(400).json({ code: 400, message: "该步骤已审批，不可重复操作" });
+    }
+
+    // 2) 角色校验：当前登录用户的角色必须与该步骤对应
+    const allowedRoles = STEP_REQUIRED_ROLES[stepName];
+    if (!allowedRoles) {
+      return res.status(400).json({ code: 400, message: "未配置该步骤的审批角色" });
+    }
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      await writeAudit({
+        actorId: req.user?.id,
+        action: "REQUISITION_APPROVE_DENIED",
+        entityType: "requisition",
+        entityId: r.id,
+        payload: { stepName, decision, actorRole: req.user?.role, reason: "ROLE_MISMATCH", allowedRoles },
+      });
+      return res.status(403).json({ code: 403, message: "当前用户角色无权审批此步骤" });
+    }
+
+    // 3) 顺序校验：必须前面所有步骤都已完成（APPROVED/REJECTED），不允许跳过中间环节
+    const targetIndex = r.approvals.findIndex((a) => a.id === target.id);
+    const previousSteps = r.approvals.slice(0, targetIndex);
+    const pendingPrevious = previousSteps.filter((a) => a.status === "PENDING");
+    if (pendingPrevious.length > 0) {
+      await writeAudit({
+        actorId: req.user.id,
+        action: "REQUISITION_APPROVE_DENIED",
+        entityType: "requisition",
+        entityId: r.id,
+        payload: { stepName, decision, actorRole: req.user.role, reason: "ORDER_VIOLATION", pendingPrevious: pendingPrevious.map((a) => a.stepName) },
+      });
+      return res.status(400).json({ code: 400, message: "请先完成前置审批步骤" });
+    }
+
+    // 4) 执行审批更新
     await prisma.approvalStep.update({
-      where: { id: step.id },
-      data: { status: decision === "APPROVED" ? "APPROVED" : "REJECTED", approverId: req.user!.id, approvedAt: new Date(), comment },
+      where: { id: target.id },
+      data: { status: decision === "APPROVED" ? "APPROVED" : "REJECTED", approverId: req.user.id, approvedAt: new Date(), comment },
     });
-    const stillPending = r.approvals.filter((a) => a.status === "PENDING" && a.id !== step.id);
+    // 重新查询最新审批状态，避免使用过期的 r.approvals 计算剩余步骤
+    const updatedApprovals = await prisma.approvalStep.findMany({ where: { requisitionId: r.id } });
+    const stillPending = updatedApprovals.filter((a) => a.status === "PENDING");
     let newStatus: any = r.status;
     if (decision !== "APPROVED") newStatus = "REJECTED";
     else if (stillPending.length === 0) newStatus = "APPROVED";
@@ -132,11 +182,11 @@ requisitionRouter.post("/:id/approve", async (req, res, next) => {
       }
     }
     await writeAudit({
-      actorId: req.user!.id,
+      actorId: req.user.id,
       action: "REQUISITION_APPROVE",
       entityType: "requisition",
       entityId: r.id,
-      payload: { stepName, decision, comment },
+      payload: { stepName, decision, comment, actorRole: req.user.role },
     });
     res.json(ok({ status: newStatus }));
   } catch (e) {
