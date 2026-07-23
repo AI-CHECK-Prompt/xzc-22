@@ -20,6 +20,10 @@ import { reportRouter } from "./routes/report";
 import { auditRouter } from "./routes/audit";
 import { complianceRouter } from "./routes/compliance";
 import { userRouter } from "./routes/user";
+// 实验项目—准入资格—化学品授权 联动
+import { projectRouter } from "./routes/project";
+import { accessRouter } from "./routes/access";
+import { blacklistRouter, userStatusRouter } from "./routes/blacklist";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -41,6 +45,7 @@ app.get("/api/v1/health", (_req, res) => {
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1/orgs", orgRouter);
 app.use("/api/v1/users", userRouter);
+app.use("/api/v1/users", userStatusRouter); // /api/v1/users/:id/status
 app.use("/api/v1/chemicals", chemicalRouter);
 app.use("/api/v1/bottles", bottleRouter);
 app.use("/api/v1/procurement", procurementRouter);
@@ -52,6 +57,10 @@ app.use("/api/v1/empty-bottles", emptyBottleRouter);
 app.use("/api/v1/reports", reportRouter);
 app.use("/api/v1/audit", auditRouter);
 app.use("/api/v1/compliance", complianceRouter);
+// 实验项目—准入资格—化学品授权 联动
+app.use("/api/v1/projects", projectRouter);
+app.use("/api/v1/access", accessRouter);
+app.use("/api/v1/blacklist", blacklistRouter);
 
 app.use(errorHandler);
 

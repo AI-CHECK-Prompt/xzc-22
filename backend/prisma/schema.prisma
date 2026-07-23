@@ -10,21 +10,24 @@ datasource db {
 // =================== 基础数据 ===================
 
 model Organization {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  shortName   String?
-  type        OrgType
-  parentId    String?
-  parent      Organization?  @relation("OrgTree", fields: [parentId], references: [id])
-  children    Organization[] @relation("OrgTree")
-  contact     String?
-  address     String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String         @id @default(uuid())
+  name      String         @unique
+  shortName String?
+  type      OrgType
+  parentId  String?
+  parent    Organization?  @relation("OrgTree", fields: [parentId], references: [id])
+  children  Organization[] @relation("OrgTree")
+  contact   String?
+  address   String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
 
-  users       User[]
-  bottles     ReagentBottle[]
-  buckets     WasteBucket[]
+  users                 User[]
+  bottles               ReagentBottle[]
+  buckets               WasteBucket[]
+  // 实验项目联动：作为牵头学院/协作学院
+  ledProjects           Project[]                @relation("ProjectLeadOrg")
+  collaboratingProjects ProjectCollaboratorOrg[] @relation("ProjectCollabOrg")
 }
 
 enum OrgType {
@@ -35,30 +38,53 @@ enum OrgType {
 }
 
 model User {
-  id            String   @id @default(uuid())
-  username      String   @unique
-  passwordHash  String
-  fullName      String
-  email         String?
-  phone         String?
-  role          UserRole
-  orgId         String
-  org           Organization @relation(fields: [orgId], references: [id])
-  idCardNo      String?
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id              String       @id @default(uuid())
+  username        String       @unique
+  passwordHash    String
+  fullName        String
+  email           String?
+  phone           String?
+  role            UserRole
+  orgId           String
+  org             Organization @relation(fields: [orgId], references: [id])
+  idCardNo        String?
+  active          Boolean      @default(true)
+  // 在学/在职状态：与教务系统对接，标识该用户是否仍可领用化学品
+  // ACTIVE 在校在岗 / GRADUATED 已毕业 / LEFT 离职离校 / BLACKLISTED 黑名单
+  userStatus      UserStatus   @default(ACTIVE)
+  statusChangedAt DateTime?
+  statusReason    String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
-  procurementPlans ProcurementPlan[]
-  requisitions     Requisition[]
+  procurementPlans   ProcurementPlan[]
+  requisitions       Requisition[]
   dualVerificationsA DualVerification[] @relation("UserA")
   dualVerificationsB DualVerification[] @relation("UserB")
-  wasteHandoffsFrom  WasteHandoff[] @relation("WasteHandoffFrom")
-  wasteHandoffsTo    WasteHandoff[] @relation("WasteHandoffTo")
-  usageLogs        UsageLog[]
-  emptyBottleOps   EmptyBottleOp[]
-  auditEvents      AuditEvent[]
-  approvals        ApprovalStep[]
+  wasteHandoffsFrom  WasteHandoff[]     @relation("WasteHandoffFrom")
+  wasteHandoffsTo    WasteHandoff[]     @relation("WasteHandoffTo")
+  usageLogs          UsageLog[]
+  emptyBottleOps     EmptyBottleOp[]
+  auditEvents        AuditEvent[]
+  approvals          ApprovalStep[]
+
+  // 实验项目—准入资格—化学品授权 联动
+  ledProjects            Project[]                @relation("ProjectLeader")
+  projectMembers         ProjectMember[]
+  collaboratorApprovals  ProjectCollaboratorOrg[] @relation("CollabApprover")
+  trainingRecords        TrainingRecord[]         @relation("Trainee")
+  trainingConductedBy    TrainingRecord[]         @relation("Trainer")
+  qualifications         AccessQualification[]    @relation("QualifiedUser")
+  qualificationsIssuedBy AccessQualification[]    @relation("QualifiedIssuer")
+  blacklistEntries       BlacklistEntry[]         @relation("BlackedUser")
+  blacklistCreatedBy     BlacklistEntry[]         @relation("BlackedCreator")
+}
+
+enum UserStatus {
+  ACTIVE
+  GRADUATED
+  LEFT
+  BLACKLISTED
 }
 
 enum UserRole {
@@ -77,28 +103,28 @@ enum UserRole {
 // =================== 化学品主数据 ===================
 
 model Chemical {
-  id              String   @id @default(uuid())
-  casNo           String   @unique
-  name            String
-  nameEn          String?
-  formula         String?
-  hazardClass     HazardClass
-  storageClass    String
-  purchaseLimit   Float?   // 强制限量（g 或 mL）
-  monthlyLimit    Float?   // 月度上限
-  unit            String   @default("mL")
-  description     String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id            String      @id @default(uuid())
+  casNo         String      @unique
+  name          String
+  nameEn        String?
+  formula       String?
+  hazardClass   HazardClass
+  storageClass  String
+  purchaseLimit Float? // 强制限量（g 或 mL）
+  monthlyLimit  Float? // 月度上限
+  unit          String      @default("mL")
+  description   String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
-  bottles         ReagentBottle[]
+  bottles          ReagentBottle[]
   procurementItems ProcurementItem[]
 }
 
 enum HazardClass {
-  PRECURSOR_DRUG      // 易制毒
+  PRECURSOR_DRUG // 易制毒
   EXPLOSIVE_PRECURSOR // 易制爆
-  HIGHLY_TOXIC        // 剧毒
+  HIGHLY_TOXIC // 剧毒
   CORROSIVE
   FLAMMABLE
   OXIDIZER
@@ -109,31 +135,31 @@ enum HazardClass {
 // =================== 试剂瓶 / 追溯码 ===================
 
 model ReagentBottle {
-  id            String   @id @default(uuid())
-  traceCode     String   @unique   // 唯一追溯码（QR + RFID 兼容）
-  rfidTag       String?  @unique
-  chemicalId    String
-  chemical      Chemical @relation(fields: [chemicalId], references: [id])
-  batchNo       String
-  supplier      String
-  manufactureDate DateTime
-  expireDate    DateTime?
-  inspectionReport String?  // 检验报告路径
-  initialQty    Float
-  remainingQty  Float
-  unit          String
-  status        BottleStatus @default(IN_STORAGE)
-  locationOrgId String
-  locationOrg   Organization @relation(fields: [locationOrgId], references: [id])
-  cabinet       String?
-  enteredAt     DateTime @default(now())
-  lastUsedAt    DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id               String       @id @default(uuid())
+  traceCode        String       @unique // 唯一追溯码（QR + RFID 兼容）
+  rfidTag          String?      @unique
+  chemicalId       String
+  chemical         Chemical     @relation(fields: [chemicalId], references: [id])
+  batchNo          String
+  supplier         String
+  manufactureDate  DateTime
+  expireDate       DateTime?
+  inspectionReport String? // 检验报告路径
+  initialQty       Float
+  remainingQty     Float
+  unit             String
+  status           BottleStatus @default(IN_STORAGE)
+  locationOrgId    String
+  locationOrg      Organization @relation(fields: [locationOrgId], references: [id])
+  cabinet          String?
+  enteredAt        DateTime     @default(now())
+  lastUsedAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
-  usageLogs     UsageLog[]
+  usageLogs          UsageLog[]
   requisitionBottles RequisitionBottle[]
-  emptyBottleOps EmptyBottleOp[]
+  emptyBottleOps     EmptyBottleOp[]
 }
 
 enum BottleStatus {
@@ -148,19 +174,19 @@ enum BottleStatus {
 // =================== 采购计划 ===================
 
 model ProcurementPlan {
-  id            String   @id @default(uuid())
-  planNo        String   @unique
-  departmentId  String
-  applicantId   String
-  applicant     User     @relation(fields: [applicantId], references: [id])
-  month         String   // 2026-07
-  status        PlanStatus @default(DRAFT)
-  totalAmount   Float    @default(0)
-  remark        String?
-  approvals     ApprovalStep[]
-  items         ProcurementItem[]
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String            @id @default(uuid())
+  planNo       String            @unique
+  departmentId String
+  applicantId  String
+  applicant    User              @relation(fields: [applicantId], references: [id])
+  month        String // 2026-07
+  status       PlanStatus        @default(DRAFT)
+  totalAmount  Float             @default(0)
+  remark       String?
+  approvals    ApprovalStep[]
+  items        ProcurementItem[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
 }
 
 enum PlanStatus {
@@ -174,37 +200,37 @@ enum PlanStatus {
 }
 
 model ProcurementItem {
-  id            String   @id @default(uuid())
-  planId        String
-  plan          ProcurementPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  chemicalId    String
-  chemical      Chemical @relation(fields: [chemicalId], references: [id])
-  requestedQty  Float
-  suggestedQty  Float
-  approvedQty   Float?
-  unit          String
-  estPrice      Float
-  remark        String?
+  id           String          @id @default(uuid())
+  planId       String
+  plan         ProcurementPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  chemicalId   String
+  chemical     Chemical        @relation(fields: [chemicalId], references: [id])
+  requestedQty Float
+  suggestedQty Float
+  approvedQty  Float?
+  unit         String
+  estPrice     Float
+  remark       String?
 }
 
 // =================== 审批流 ===================
 
 model ApprovalStep {
-  id            String   @id @default(uuid())
-  targetType    String   // procurement_plan / requisition
-  targetId      String
-  stepName      String
-  approverId    String?
-  approver      User?    @relation(fields: [approverId], references: [id])
-  status        ApprovalStatus @default(PENDING)
-  comment       String?
-  approvedAt    DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id         String         @id @default(uuid())
+  targetType String // procurement_plan / requisition
+  targetId   String
+  stepName   String
+  approverId String?
+  approver   User?          @relation(fields: [approverId], references: [id])
+  status     ApprovalStatus @default(PENDING)
+  comment    String?
+  approvedAt DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
 
   plan          ProcurementPlan? @relation(fields: [planId], references: [id])
   planId        String?
-  requisition   Requisition? @relation(fields: [requisitionId], references: [id])
+  requisition   Requisition?     @relation(fields: [requisitionId], references: [id])
   requisitionId String?
 }
 
@@ -218,19 +244,23 @@ enum ApprovalStatus {
 // =================== 领用 ===================
 
 model Requisition {
-  id            String   @id @default(uuid())
-  reqNo         String   @unique
-  applicantId   String
-  applicant     User     @relation(fields: [applicantId], references: [id])
-  projectCode   String?
-  purpose       String
-  expectedTime  DateTime
-  status        ReqStatus @default(PENDING)
-  approvals     ApprovalStep[]
-  bottles       RequisitionBottle[]
-  verification  DualVerification?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String              @id @default(uuid())
+  reqNo        String              @unique
+  applicantId  String
+  applicant    User                @relation(fields: [applicantId], references: [id])
+  projectCode  String?
+  // 关联项目（用于"实验项目—准入资格—化学品授权"联动校验）
+  // 与 projectCode 至少有一个必填；项目结题后无法再发起新领用
+  projectId    String?
+  project      Project?            @relation(fields: [projectId], references: [id])
+  purpose      String
+  expectedTime DateTime
+  status       ReqStatus           @default(PENDING)
+  approvals    ApprovalStep[]
+  bottles      RequisitionBottle[]
+  verification DualVerification?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
 }
 
 enum ReqStatus {
@@ -243,9 +273,9 @@ enum ReqStatus {
 }
 
 model RequisitionBottle {
-  id            String   @id @default(uuid())
+  id            String        @id @default(uuid())
   requisitionId String
-  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  requisition   Requisition   @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
   bottleId      String
   bottle        ReagentBottle @relation(fields: [bottleId], references: [id])
   requestedQty  Float
@@ -258,13 +288,13 @@ model RequisitionBottle {
 // 语义上属于 userA 自报证据。
 
 model DualVerification {
-  id            String   @id @default(uuid())
-  requisitionId String   @unique
+  id            String      @id @default(uuid())
+  requisitionId String      @unique
   requisition   Requisition @relation(fields: [requisitionId], references: [id])
   userAId       String
-  userA         User     @relation("UserA", fields: [userAId], references: [id])
+  userA         User        @relation("UserA", fields: [userAId], references: [id])
   userBId       String
-  userB         User     @relation("UserB", fields: [userBId], references: [id])
+  userB         User        @relation("UserB", fields: [userBId], references: [id])
 
   // userA 端自报证据（由 userA 登录会话提交）
   locationLat   Float?
@@ -281,48 +311,48 @@ model DualVerification {
   userBConfirmedAt  DateTime?
   userBClientIp     String?
 
-  checkInAt     DateTime @default(now())
+  checkInAt       DateTime  @default(now())
   cabinetOpenedAt DateTime?
   cabinetClosedAt DateTime?
   // result 语义：null = 已由 userA 发起，等待 userB 独立确认；PASS = 双方均确认通过；FAIL = 任一方失败
-  result        String?
-  remark        String?
+  result          String?
+  remark          String?
 }
 
 // =================== 使用登记 ===================
 
 model UsageLog {
-  id            String   @id @default(uuid())
-  bottleId      String
-  bottle        ReagentBottle @relation(fields: [bottleId], references: [id])
-  userId        String
-  user          User     @relation(fields: [userId], references: [id])
-  qty           Float
-  remaining     Float
-  experiment    String
-  content       String?
-  nextUse       String?
-  loggedAt      DateTime @default(now())
-  offline       Boolean  @default(false)
-  clientId      String?
+  id         String        @id @default(uuid())
+  bottleId   String
+  bottle     ReagentBottle @relation(fields: [bottleId], references: [id])
+  userId     String
+  user       User          @relation(fields: [userId], references: [id])
+  qty        Float
+  remaining  Float
+  experiment String
+  content    String?
+  nextUse    String?
+  loggedAt   DateTime      @default(now())
+  offline    Boolean       @default(false)
+  clientId   String?
 }
 
 // =================== 废液归集 ===================
 
 model WasteBucket {
-  id            String   @id @default(uuid())
-  bucketNo      String   @unique
+  id            String         @id @default(uuid())
+  bucketNo      String         @unique
   ownerOrgId    String
-  ownerOrg      Organization @relation(fields: [ownerOrgId], references: [id])
+  ownerOrg      Organization   @relation(fields: [ownerOrgId], references: [id])
   category      WasteCategory
   capacity      Float
-  currentVolume Float    @default(0)
-  status        BucketStatus @default(IDLE)
+  currentVolume Float          @default(0)
+  status        BucketStatus   @default(IDLE)
   locatedAt     String
   lastHandoffAt DateTime?
   handoffs      WasteHandoff[]
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 enum WasteCategory {
@@ -346,21 +376,21 @@ enum BucketStatus {
 // 在确认阶段写入，禁止发起人代填。confirmedAt/toClientIp 在确认时同步落库，便于审计与
 // 区分真实的两方学院代表，避免年终统计双向重复计入。
 model WasteHandoff {
-  id            String   @id @default(uuid())
+  id            String        @id @default(uuid())
   bucketId      String
-  bucket        WasteBucket @relation(fields: [bucketId], references: [id])
+  bucket        WasteBucket   @relation(fields: [bucketId], references: [id])
   fromOrgId     String
   toOrgId       String
   fromUserId    String
-  fromUser      User     @relation("WasteHandoffFrom", fields: [fromUserId], references: [id])
+  fromUser      User          @relation("WasteHandoffFrom", fields: [fromUserId], references: [id])
   toUserId      String?
-  toUser        User?    @relation("WasteHandoffTo", fields: [toUserId], references: [id])
+  toUser        User?         @relation("WasteHandoffTo", fields: [toUserId], references: [id])
   fromClientIp  String?
   toClientIp    String?
   toConfirmedAt DateTime?
   weight        Float
   category      WasteCategory
-  handoverAt    DateTime @default(now())
+  handoverAt    DateTime      @default(now())
   photoUrl      String?
   signature     String?
   remark        String?
@@ -369,16 +399,16 @@ model WasteHandoff {
 // =================== 空瓶回收 ===================
 
 model EmptyBottleOp {
-  id            String   @id @default(uuid())
-  bottleId      String
-  bottle        ReagentBottle @relation(fields: [bottleId], references: [id])
-  operatorId    String
-  operator      User     @relation(fields: [operatorId], references: [id])
-  opType        EmptyOpType
-  weight        Float?
-  photoUrl      String?
-  note          String?
-  operatedAt    DateTime @default(now())
+  id         String        @id @default(uuid())
+  bottleId   String
+  bottle     ReagentBottle @relation(fields: [bottleId], references: [id])
+  operatorId String
+  operator   User          @relation(fields: [operatorId], references: [id])
+  opType     EmptyOpType
+  weight     Float?
+  photoUrl   String?
+  note       String?
+  operatedAt DateTime      @default(now())
 }
 
 enum EmptyOpType {
@@ -390,25 +420,180 @@ enum EmptyOpType {
 // =================== 审计 ===================
 
 model AuditEvent {
-  id            String   @id @default(uuid())
-  actorId       String?
-  actor         User?    @relation(fields: [actorId], references: [id])
-  action        String
-  entityType    String
-  entityId      String
-  traceCode     String?
-  payload       Json?
-  occurredAt    DateTime @default(now())
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String
+  traceCode  String?
+  payload    Json?
+  occurredAt DateTime @default(now())
 }
 
 // =================== 合规对接 ===================
 
 model ComplianceReport {
-  id            String   @id @default(uuid())
-  target        String   // public_security / ecology / education / security
-  period        String
-  payload       Json
-  status        String   // SUCCESS / FAILED
-  submittedAt   DateTime @default(now())
-  response      String?
+  id          String   @id @default(uuid())
+  target      String // public_security / ecology / education / security
+  period      String
+  payload     Json
+  status      String // SUCCESS / FAILED
+  submittedAt DateTime @default(now())
+  response    String?
+}
+
+// =================== 实验项目—准入资格—化学品授权 联动 ===================
+
+// 注：高危化学品类别集合（PRECURSOR_DRUG 易制毒 / EXPLOSIVE_PRECURSOR 易制爆 /
+// HIGHLY_TOXIC 剧毒）以常量形式定义在 src/utils/access.ts 中；涉及任一高危类别的
+// 项目自动标记为高危项目，参见 Project.isHighRisk 的写入逻辑。
+
+// 学院与课题组登记在研实验项目
+model Project {
+  id              String   @id @default(uuid())
+  projectCode     String   @unique
+  name            String
+  description     String?
+  leaderId        String
+  leader          User     @relation("ProjectLeader", fields: [leaderId], references: [id])
+  leadOrgId       String   // 牵头学院
+  leadOrg         Organization @relation("ProjectLeadOrg", fields: [leadOrgId], references: [id])
+  startDate       DateTime
+  endDate         DateTime
+  // 涉及的化学品类别（多值 JSON 数组：["FLAMMABLE","PRECURSOR_DRUG",...]）
+  // 兼容 SQLite 验证；Postgres 端可用 JSONB 函数索引
+  hazardCategories String
+  // 自动判定：hazardCategories 包含任一高危类别时为 true
+  isHighRisk      Boolean  @default(false)
+  status          ProjectStatus @default(ACTIVE)
+  remark          String?
+  members         ProjectMember[]
+  collaborators   ProjectCollaboratorOrg[]
+  qualifications  AccessQualification[]
+  requisitions    Requisition[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+enum ProjectStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+// 项目成员（含项目负责人与组员）
+model ProjectMember {
+  id        String            @id @default(uuid())
+  projectId String
+  project   Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User              @relation(fields: [userId], references: [id])
+  role      ProjectMemberRole @default(MEMBER)
+  joinedAt  DateTime          @default(now())
+  leftAt    DateTime?
+  active    Boolean           @default(true)
+
+  @@unique([projectId, userId])
+}
+
+enum ProjectMemberRole {
+  LEADER
+  MEMBER
+}
+
+// 跨学院项目协作备案：协作学院学生在牵头学院备案后获得临时准入资格
+// 临时资格仅在项目周期内有效（validFrom~validTo）
+model ProjectCollaboratorOrg {
+  id           String       @id @default(uuid())
+  projectId    String
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  orgId        String
+  org          Organization @relation("ProjectCollabOrg", fields: [orgId], references: [id])
+  approvedById String
+  approvedBy   User         @relation("CollabApprover", fields: [approvedById], references: [id])
+  approvedAt   DateTime     @default(now())
+  validFrom    DateTime
+  validTo      DateTime
+  status       CollabStatus @default(ACTIVE)
+
+  @@unique([projectId, orgId])
+}
+
+enum CollabStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+// 培训记录（基础安全培训 / 高危专项培训）由保卫处维护
+model TrainingRecord {
+  id            String       @id @default(uuid())
+  userId        String
+  user          User         @relation("Trainee", fields: [userId], references: [id])
+  trainingType  TrainingType
+  score         Float
+  passed        Boolean
+  evidence      String? // 试卷/证书/录像路径
+  trainedAt     DateTime     @default(now())
+  conductedById String // 保卫处人员
+  conductedBy   User         @relation("Trainer", fields: [conductedById], references: [id])
+  remark        String?
+}
+
+enum TrainingType {
+  BASIC_SAFETY // 基础安全培训
+  HIGH_RISK_SPECIAL // 高危专项培训
+}
+
+// 准入资格：基础 / 高危；来源于培训或跨学院临时备案
+// 关键：化学品领用申请时按 hazardClass → 资格等级 严格联动
+model AccessQualification {
+  id                String     @id @default(uuid())
+  userId            String
+  user              User       @relation("QualifiedUser", fields: [userId], references: [id])
+  qualificationType QualType
+  source            QualSource
+  // 跨学院临时备案相关字段（仅 source = CROSS_COLLAB_TEMP 时使用）
+  sourceProjectId   String?
+  sourceProject     Project?   @relation(fields: [sourceProjectId], references: [id])
+  issuedById        String
+  issuedBy          User       @relation("QualifiedIssuer", fields: [issuedById], references: [id])
+  issuedAt          DateTime   @default(now())
+  expiresAt         DateTime?
+  // 回收：毕业生/离校/项目结题/违规
+  revokedAt         DateTime?
+  revokedReason     String?
+  status            QualStatus @default(ACTIVE)
+}
+
+enum QualType {
+  BASIC // 基础准入（普通化学品）
+  HIGH_RISK // 高危准入（易制毒/易制爆/剧毒）
+}
+
+enum QualSource {
+  TRAINING // 通过培训获得
+  CROSS_COLLAB_TEMP // 跨学院项目临时备案
+}
+
+enum QualStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+// 黑名单：多次违规或事故的师生进入黑名单，黑名单期内禁止申领任何化学品
+model BlacklistEntry {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation("BlackedUser", fields: [userId], references: [id])
+  reason         String
+  violationCount Int      @default(1)
+  enteredAt      DateTime @default(now())
+  expiresAt      DateTime
+  active         Boolean  @default(true)
+  createdById    String
+  createdBy      User     @relation("BlackedCreator", fields: [createdById], references: [id])
+  remark         String?
 }

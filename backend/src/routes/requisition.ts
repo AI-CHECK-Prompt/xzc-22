@@ -4,6 +4,7 @@ import { authRequired } from "../middleware/auth";
 import { ok } from "../utils/response";
 import { genNo } from "../utils/code";
 import { writeAudit } from "../utils/audit";
+import { checkRequisitionEligibility, isHighRiskCategory } from "../utils/access";
 import { z } from "zod";
 import { UserRole } from "@prisma/client";
 
@@ -21,6 +22,7 @@ const STEP_REQUIRED_ROLES: Record<string, UserRole[]> = {
 
 const createSchema = z.object({
   projectCode: z.string().optional(),
+  projectId: z.string().optional(),
   purpose: z.string(),
   expectedTime: z.string(),
   bottles: z.array(z.object({ bottleId: z.string(), requestedQty: z.number() })),
@@ -29,26 +31,42 @@ const createSchema = z.object({
 requisitionRouter.post("/", async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
-    // 是否包含高危品类（易制毒 / 易制爆 / 剧毒）
-    const bottleIds = data.bottles.map((b) => b.bottleId);
-    const bottles = await prisma.reagentBottle.findMany({ where: { id: { in: bottleIds } }, include: { chemical: true } });
-    // 需追加保卫处复核 + 主管领导审批的高危品类
-    const regulatedClasses = ["PRECURSOR_DRUG", "EXPLOSIVE_PRECURSOR", "HIGHLY_TOXIC"];
-    const hasRegulated = bottles.some((b) => regulatedClasses.includes(b.chemical.hazardClass));
-    // 是否含易制爆（额外需要保卫处复核 + 主管领导审批，无论如何都必须留痕）
-    const isExplosivePrecursor = bottles.some((b) => b.chemical.hazardClass === "EXPLOSIVE_PRECURSOR");
+
+    // 联动校验：黑名单/离校/资格/项目品类/项目结题 —— 任何一项不通过均直接拒
+    const eligibility = await checkRequisitionEligibility({
+      applicantId: req.user!.id,
+      bottles: data.bottles,
+      projectId: data.projectId,
+    });
+    if (!eligibility.ok) {
+      const code = eligibility.code ?? 400;
+      await writeAudit({
+        actorId: req.user!.id,
+        action: "REQUISITION_CREATE_DENIED",
+        entityType: "requisition",
+        entityId: req.user!.id,
+        payload: { reason: eligibility.message, bottles: data.bottles, projectId: data.projectId },
+      });
+      return res.status(code).json({ code, message: eligibility.message });
+    }
+    const bottles = eligibility.bottles!;
+    const hazardClasses = eligibility.hazardClasses!;
+
+    // 高危判定：易制毒/易制爆/剧毒 → 追加保卫处复核 + 主管领导审批
+    const hasRegulated = hazardClasses.some((hc: string) => isHighRiskCategory(hc));
+    const isExplosivePrecursor = hazardClasses.includes("EXPLOSIVE_PRECURSOR");
     const reqNo = genNo("REQ");
     // 基础三级审批
     const baseSteps = [
-      { stepName: "导师审核", status: "PENDING" as const },
-      { stepName: "项目负责人审核", status: "PENDING" as const },
-      { stepName: "危化品管理员审核", status: "PENDING" as const },
+      { stepName: "导师审核", status: "PENDING" as const, targetType: "requisition" as const, targetId: "__DEFER__" },
+      { stepName: "项目负责人审核", status: "PENDING" as const, targetType: "requisition" as const, targetId: "__DEFER__" },
+      { stepName: "危化品管理员审核", status: "PENDING" as const, targetType: "requisition" as const, targetId: "__DEFER__" },
     ];
     // 高危品类追加保卫处复核 + 主管领导审批
     const extraSteps = hasRegulated
       ? [
-          { stepName: "保卫处复核", status: "PENDING" as const },
-          { stepName: "主管领导审批", status: "PENDING" as const },
+          { stepName: "保卫处复核", status: "PENDING" as const, targetType: "requisition" as const, targetId: "__DEFER__" },
+          { stepName: "主管领导审批", status: "PENDING" as const, targetType: "requisition" as const, targetId: "__DEFER__" },
         ]
       : [];
     const r = await prisma.requisition.create({
@@ -56,15 +74,30 @@ requisitionRouter.post("/", async (req, res, next) => {
         reqNo,
         applicantId: req.user!.id,
         projectCode: data.projectCode,
+        projectId: data.projectId,
         purpose: data.purpose,
         expectedTime: new Date(data.expectedTime),
         bottles: { create: data.bottles },
+        // 注意：ApprovalStep.targetId 为必填，Prisma 在嵌套 create 时无法引用父 ID
+        // 这里用占位符创建，拿到 req.id 后再批量回填
         approvals: {
-          create: [...baseSteps, ...extraSteps],
+          create: [...baseSteps, ...extraSteps].map((s) => ({
+            stepName: s.stepName,
+            status: s.status,
+            targetType: s.targetType,
+            targetId: reqNo, // 临时使用 reqNo 作为占位，回填阶段再覆盖
+          })),
         },
       },
-      include: { bottles: { include: { bottle: { include: { chemical: true } } } }, approvals: true },
+      include: { bottles: { include: { bottle: { include: { chemical: true } } } }, approvals: true, project: true },
     });
+    // 回填 targetId 为 requisition.id（避免嵌套 create 无法引用父 id 的限制）
+    if (r.approvals.length > 0) {
+      await prisma.approvalStep.updateMany({
+        where: { requisitionId: r.id },
+        data: { targetId: r.id },
+      });
+    }
     await writeAudit({
       actorId: req.user!.id,
       action: "REQUISITION_CREATE",
@@ -74,6 +107,9 @@ requisitionRouter.post("/", async (req, res, next) => {
         reqNo,
         hasRegulated,
         isExplosivePrecursor,
+        hazardClasses,
+        projectId: data.projectId,
+        projectCode: data.projectCode,
         bottles: data.bottles,
         approvalSteps: [...baseSteps, ...extraSteps].map((s) => s.stepName),
       },

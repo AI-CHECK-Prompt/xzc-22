@@ -85,6 +85,15 @@ const createSchema = z.object({
 procurementRouter.post("/", async (req, res, next) => {
   try {
     const data = createSchema.parse(req.body);
+
+    // 预解析：把 chemicalId 列表中每个品类的 unit 取出来，构造 ProcurementItem 必填字段
+    const chemicalIds = Array.from(new Set(data.items.map((i) => i.chemicalId)));
+    const chemicals = await prisma.chemical.findMany({
+      where: { id: { in: chemicalIds } },
+      select: { id: true, unit: true },
+    });
+    const unitMap = new Map(chemicals.map((c) => [c.id, c.unit]));
+
     const planNo = genNo("PLAN");
     const total = data.items.reduce((s, i) => s + i.estPrice * i.requestedQty, 0);
     const plan = await prisma.procurementPlan.create({
@@ -95,17 +104,34 @@ procurementRouter.post("/", async (req, res, next) => {
         applicantId: req.user!.id,
         remark: data.remark,
         totalAmount: total,
-        items: { create: data.items },
+        items: {
+          create: data.items.map((i) => ({
+            chemicalId: i.chemicalId,
+            requestedQty: i.requestedQty,
+            suggestedQty: i.suggestedQty,
+            estPrice: i.estPrice,
+            unit: unitMap.get(i.chemicalId) || "",
+            remark: i.remark,
+          })),
+        },
         approvals: {
           create: [
-            { stepName: "设备秘书提交", status: "APPROVED", approverId: req.user!.id, approvedAt: new Date() },
-            { stepName: "科研处审核", status: "PENDING" },
-            { stepName: "保卫处审核", status: "PENDING" },
+            // 设备秘书提交：使用占位 targetId=planNo，创建 plan 后再批量回填为 plan.id
+            { stepName: "设备秘书提交", status: "APPROVED", approverId: req.user!.id, approvedAt: new Date(), targetType: "procurement_plan", targetId: planNo },
+            { stepName: "科研处审核", status: "PENDING", targetType: "procurement_plan", targetId: planNo },
+            { stepName: "保卫处审核", status: "PENDING", targetType: "procurement_plan", targetId: planNo },
           ],
         },
       },
       include: { items: { include: { chemical: true } }, approvals: true },
     });
+    // 回填 targetId 为 plan.id（Prisma 嵌套 create 无法引用父 id，统一在父记录创建后回填）
+    if (plan.approvals.length > 0) {
+      await prisma.approvalStep.updateMany({
+        where: { planId: plan.id },
+        data: { targetId: plan.id },
+      });
+    }
     await writeAudit({
       actorId: req.user!.id,
       action: "PROCUREMENT_CREATE",

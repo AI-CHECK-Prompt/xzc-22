@@ -1,0 +1,251 @@
+// 仅用于在无 Postgres 环境下做"实验项目—准入资格—化学品授权"联动的
+// 端到端集成验证。覆盖 access.ts 工具与 project/access/blacklist 路由的核心路径。
+// provider 改为 sqlite，client 输出到独立目录，避免覆盖生产 @prisma/client；跑通后保留作为回归测试用例。
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/verify-access-client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev-access.db"
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  shortName String?
+  type      String
+  parentId  String?
+  parent    Organization?  @relation("OrgTree", fields: [parentId], references: [id])
+  children  Organization[] @relation("OrgTree")
+  contact   String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users             User[]
+  bottles           ReagentBottle[]
+  buckets           WasteBucket[]
+  ledProjects       Project[]              @relation("ProjectLeadOrg")
+  collabProjects    ProjectCollaboratorOrg[] @relation("ProjectCollabOrg")
+}
+
+model User {
+  id              String   @id @default(uuid())
+  username        String   @unique
+  passwordHash    String
+  fullName        String
+  email           String?
+  phone           String?
+  role            String
+  orgId           String
+  org             Organization @relation(fields: [orgId], references: [id])
+  idCardNo        String?
+  active          Boolean  @default(true)
+  userStatus      String   @default("ACTIVE")
+  statusChangedAt DateTime?
+  statusReason    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  requisitions           Requisition[]
+  projectMembers         ProjectMember[]
+  collabApprovals        ProjectCollaboratorOrg[]  @relation("CollabApprover")
+  ledProjects            Project[]                 @relation("ProjectLeader")
+  trainingAsTrainee      TrainingRecord[]          @relation("Trainee")
+  trainingAsTrainer      TrainingRecord[]          @relation("Trainer")
+  qualsAsUser            AccessQualification[]     @relation("QualifiedUser")
+  qualsAsIssuer          AccessQualification[]     @relation("QualifiedIssuer")
+  blacklistsAsUser       BlacklistEntry[]          @relation("BlackedUser")
+  blacklistsAsCreator    BlacklistEntry[]          @relation("BlackedCreator")
+}
+
+model Project {
+  id                String   @id @default(uuid())
+  projectCode       String   @unique
+  name              String
+  description       String?
+  leaderId          String
+  leader            User     @relation("ProjectLeader", fields: [leaderId], references: [id])
+  leadOrgId         String
+  leadOrg           Organization @relation("ProjectLeadOrg", fields: [leadOrgId], references: [id])
+  startDate         DateTime
+  endDate           DateTime
+  hazardCategories  String
+  isHighRisk        Boolean  @default(false)
+  status            String   @default("ACTIVE")
+  remark            String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  members        ProjectMember[]
+  collaborators  ProjectCollaboratorOrg[]
+  qualifications AccessQualification[]
+  requisitions   Requisition[]
+}
+
+model ProjectMember {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  role      String   @default("MEMBER")
+  joinedAt  DateTime @default(now())
+  leftAt    DateTime?
+  active    Boolean  @default(true)
+
+  @@unique([projectId, userId])
+}
+
+model ProjectCollaboratorOrg {
+  id           String       @id @default(uuid())
+  projectId    String
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  orgId        String
+  org          Organization @relation("ProjectCollabOrg", fields: [orgId], references: [id])
+  approvedById String
+  approvedBy   User         @relation("CollabApprover", fields: [approvedById], references: [id])
+  approvedAt   DateTime     @default(now())
+  validFrom    DateTime
+  validTo      DateTime
+  status       String       @default("ACTIVE")
+
+  @@unique([projectId, orgId])
+}
+
+model TrainingRecord {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation("Trainee", fields: [userId], references: [id])
+  trainingType  String
+  score         Float
+  passed        Boolean
+  evidence      String?
+  trainedAt     DateTime @default(now())
+  conductedById String
+  conductedBy   User     @relation("Trainer", fields: [conductedById], references: [id])
+  remark        String?
+}
+
+model AccessQualification {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation("QualifiedUser", fields: [userId], references: [id])
+  qualificationType String
+  source            String
+  sourceProjectId   String?
+  sourceProject     Project? @relation(fields: [sourceProjectId], references: [id])
+  issuedById        String
+  issuedBy          User     @relation("QualifiedIssuer", fields: [issuedById], references: [id])
+  issuedAt          DateTime @default(now())
+  expiresAt         DateTime?
+  revokedAt         DateTime?
+  revokedReason     String?
+  status            String   @default("ACTIVE")
+}
+
+model BlacklistEntry {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation("BlackedUser", fields: [userId], references: [id])
+  reason         String
+  violationCount Int      @default(1)
+  enteredAt      DateTime @default(now())
+  expiresAt      DateTime
+  active         Boolean  @default(true)
+  createdById    String
+  createdBy      User     @relation("BlackedCreator", fields: [createdById], references: [id])
+  remark         String?
+}
+
+model Chemical {
+  id            String   @id @default(uuid())
+  casNo         String   @unique
+  name          String
+  nameEn        String?
+  formula       String?
+  hazardClass   String
+  storageClass  String
+  purchaseLimit Float?
+  monthlyLimit  Float?
+  unit          String   @default("mL")
+  description   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  bottles ReagentBottle[]
+}
+
+model ReagentBottle {
+  id               String   @id @default(uuid())
+  traceCode        String   @unique
+  rfidTag          String?  @unique
+  chemicalId       String
+  chemical         Chemical @relation(fields: [chemicalId], references: [id])
+  batchNo          String
+  supplier         String
+  manufactureDate  DateTime
+  expireDate       DateTime?
+  inspectionReport String?
+  initialQty       Float
+  remainingQty     Float
+  unit             String
+  status           String   @default("IN_STORAGE")
+  locationOrgId    String
+  locationOrg      Organization @relation(fields: [locationOrgId], references: [id])
+  cabinet          String?
+  enteredAt        DateTime @default(now())
+  lastUsedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Requisition {
+  id           String   @id @default(uuid())
+  reqNo        String   @unique
+  applicantId  String
+  applicant    User     @relation(fields: [applicantId], references: [id])
+  projectCode  String?
+  projectId    String?
+  project      Project? @relation(fields: [projectId], references: [id])
+  purpose      String
+  expectedTime DateTime
+  status       String   @default("PENDING")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  approvals ApprovalStep[]
+}
+
+model ApprovalStep {
+  id            String    @id @default(uuid())
+  targetType    String
+  targetId      String
+  stepName      String
+  approverId    String?
+  status        String    @default("PENDING")
+  comment       String?
+  approvedAt    DateTime?
+  planId        String?
+  requisitionId String?
+  requisition   Requisition? @relation(fields: [requisitionId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model WasteBucket {
+  id            String   @id @default(uuid())
+  bucketNo      String   @unique
+  ownerOrgId    String
+  ownerOrg      Organization @relation(fields: [ownerOrgId], references: [id])
+  category      String
+  capacity      Float
+  currentVolume Float    @default(0)
+  status        String   @default("IDLE")
+  locatedAt     String
+  lastHandoffAt DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
