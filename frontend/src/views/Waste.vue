@@ -63,10 +63,27 @@
         <el-table-column label="重量" width="100">
           <template #default="{ row }">{{ row.weight }} L</template>
         </el-table-column>
-        <el-table-column label="接收方" prop="toOrgId" />
+        <el-table-column label="移交方" width="160">
+          <template #default="{ row }">
+            <span>{{ row.fromUser?.fullName || row.fromUserId }}</span>
+            <el-tag size="small" type="info" style="margin-left:4px;">{{ row.fromOrgId.slice(0, 6) }}…</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="接收方" width="200">
+          <template #default="{ row }">
+            <template v-if="confirmed(row)">
+              <span>{{ row.toUser?.fullName || row.toUserId }}</span>
+              <el-tag size="small" type="success" style="margin-left:4px;">已确认</el-tag>
+            </template>
+            <template v-else>
+              <el-tag size="small" type="warning">待 {{ row.toOrgId.slice(0, 6) }}… 确认</el-tag>
+            </template>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="120">
           <template #default="{ row }">
-            <el-button size="small" type="primary" link @click="confirm(row)" v-if="!confirmed(row)">扫码确认</el-button>
+            <el-button size="small" type="primary" link @click="confirm(row)" v-if="!confirmed(row) && canConfirm(row)">扫码确认</el-button>
+            <el-tag v-else-if="!confirmed(row)" size="small" type="info">无权限</el-tag>
             <el-tag v-else type="success" size="small">已确认</el-tag>
           </template>
         </el-table-column>
@@ -132,7 +149,16 @@ async function handoff() {
 }
 
 function confirmed(row: any) {
-  return row.toUserId && row.toUserId !== row.fromUserId;
+  // 仅当 toUserId 由接收方独立确认后才视为完成；toUserId 留空 = 仍在待确认
+  return !!row.toUserId;
+}
+
+function canConfirm(row: any) {
+  // 只有接收方学院成员（且不是移交方本人）才显示"扫码确认"按钮，避免越权
+  const me = userStore.user;
+  if (!me) return false;
+  if (row.fromUserId === me.id) return false;
+  return me.orgId === row.toOrgId;
 }
 
 async function confirm(row: any) {

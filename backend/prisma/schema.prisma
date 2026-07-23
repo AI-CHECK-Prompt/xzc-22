@@ -53,6 +53,8 @@ model User {
   requisitions     Requisition[]
   dualVerificationsA DualVerification[] @relation("UserA")
   dualVerificationsB DualVerification[] @relation("UserB")
+  wasteHandoffsFrom  WasteHandoff[] @relation("WasteHandoffFrom")
+  wasteHandoffsTo    WasteHandoff[] @relation("WasteHandoffTo")
   usageLogs        UsageLog[]
   emptyBottleOps   EmptyBottleOp[]
   auditEvents      AuditEvent[]
@@ -130,6 +132,8 @@ model ReagentBottle {
   updatedAt     DateTime @updatedAt
 
   usageLogs     UsageLog[]
+  requisitionBottles RequisitionBottle[]
+  emptyBottleOps EmptyBottleOp[]
 }
 
 enum BottleStatus {
@@ -338,6 +342,9 @@ enum BucketStatus {
   DISPATCHED
 }
 
+// 关键约束：fromUserId 由发起人(移交方) 写入；toUserId 必须由 toOrgId 内的另一名独立账号
+// 在确认阶段写入，禁止发起人代填。confirmedAt/toClientIp 在确认时同步落库，便于审计与
+// 区分真实的两方学院代表，避免年终统计双向重复计入。
 model WasteHandoff {
   id            String   @id @default(uuid())
   bucketId      String
@@ -345,7 +352,12 @@ model WasteHandoff {
   fromOrgId     String
   toOrgId       String
   fromUserId    String
-  toUserId      String
+  fromUser      User     @relation("WasteHandoffFrom", fields: [fromUserId], references: [id])
+  toUserId      String?
+  toUser        User?    @relation("WasteHandoffTo", fields: [toUserId], references: [id])
+  fromClientIp  String?
+  toClientIp    String?
+  toConfirmedAt DateTime?
   weight        Float
   category      WasteCategory
   handoverAt    DateTime @default(now())

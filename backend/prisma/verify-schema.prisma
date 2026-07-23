@@ -1,0 +1,84 @@
+// 仅用于在无 Postgres 环境下做最小化集成验证。
+// 复用正式 schema，但覆盖 datasource provider 为 sqlite，
+// 跑通 waste.ts 的关键查询路径；验证完毕后会保留作为回归测试用例。
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev-verify.db"
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  shortName String?
+  type      String
+  parentId  String?
+  parent    Organization?  @relation("OrgTree", fields: [parentId], references: [id])
+  children  Organization[] @relation("OrgTree")
+  contact   String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users     User[]
+  buckets   WasteBucket[]
+}
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  passwordHash  String
+  fullName      String
+  email         String?
+  phone         String?
+  role          String
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id])
+  idCardNo      String?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  wasteHandoffsFrom  WasteHandoff[] @relation("WasteHandoffFrom")
+  wasteHandoffsTo    WasteHandoff[] @relation("WasteHandoffTo")
+}
+
+model WasteBucket {
+  id            String   @id @default(uuid())
+  bucketNo      String   @unique
+  ownerOrgId    String
+  ownerOrg      Organization @relation(fields: [ownerOrgId], references: [id])
+  category      String
+  capacity      Float
+  currentVolume Float    @default(0)
+  status        String   @default("IDLE")
+  locatedAt     String
+  lastHandoffAt DateTime?
+  handoffs      WasteHandoff[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model WasteHandoff {
+  id            String   @id @default(uuid())
+  bucketId      String
+  bucket        WasteBucket @relation(fields: [bucketId], references: [id])
+  fromOrgId     String
+  toOrgId       String
+  fromUserId    String
+  fromUser      User     @relation("WasteHandoffFrom", fields: [fromUserId], references: [id])
+  toUserId      String?
+  toUser        User?    @relation("WasteHandoffTo", fields: [toUserId], references: [id])
+  fromClientIp  String?
+  toClientIp    String?
+  toConfirmedAt DateTime?
+  weight        Float
+  category      String
+  handoverAt    DateTime @default(now())
+  photoUrl      String?
+  signature     String?
+  remark        String?
+}

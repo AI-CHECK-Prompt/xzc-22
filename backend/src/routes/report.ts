@@ -56,9 +56,19 @@ reportRouter.get("/inventory-turnover", async (_req, res, next) => {
 
 reportRouter.get("/waste-stat", async (_req, res, next) => {
   try {
-    const handoffs = await prisma.wasteHandoff.findMany();
+    // 仅统计已确认 (toUserId 非空) 的电子交接，避免发起阶段被误算入年终产生量
+    const handoffs = await prisma.wasteHandoff.findMany({
+      where: { toUserId: { not: null } },
+    });
     const byCategory: Record<string, number> = {};
-    handoffs.forEach((h) => (byCategory[h.category] = (byCategory[h.category] || 0) + h.weight));
+    // 按学院双向归集：fromOrgId 计"产生量"，toOrgId 计"接收处置量"，杜绝两方重复计入
+    const producedByOrg: Record<string, number> = {};
+    const receivedByOrg: Record<string, number> = {};
+    for (const h of handoffs) {
+      byCategory[h.category] = (byCategory[h.category] || 0) + h.weight;
+      producedByOrg[h.fromOrgId] = (producedByOrg[h.fromOrgId] || 0) + h.weight;
+      receivedByOrg[h.toOrgId] = (receivedByOrg[h.toOrgId] || 0) + h.weight;
+    }
     const buckets = await prisma.wasteBucket.groupBy({
       by: ["category"],
       _sum: { currentVolume: true },
@@ -66,6 +76,9 @@ reportRouter.get("/waste-stat", async (_req, res, next) => {
     res.json(ok({
       byHandoff: byCategory,
       byBucket: buckets.map((b) => ({ category: b.category, volume: b._sum.currentVolume })),
+      producedByOrg,
+      receivedByOrg,
+      confirmedCount: handoffs.length,
     }));
   } catch (e) {
     next(e);
