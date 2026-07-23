@@ -186,6 +186,18 @@ procurementRouter.post("/:id/approve", async (req, res, next) => {
       where: { id: step.id },
       data: { status: decision === "APPROVED" ? "APPROVED" : "REJECTED", approverId: req.user!.id, approvedAt: new Date(), comment },
     });
+    // 驳回后需要把排在该步骤之后、尚未开始的步骤全部置为 SKIPPED，
+    // 否则后续角色在审批列表中仍会看到「待审批」，易与真正待办混淆。
+    if (decision !== "APPROVED") {
+      await prisma.approvalStep.updateMany({
+        where: {
+          planId: plan.id,
+          status: "PENDING",
+          createdAt: { gt: step.createdAt },
+        },
+        data: { status: "SKIPPED" },
+      });
+    }
     let newStatus = plan.status;
     if (decision !== "APPROVED") newStatus = "REJECTED";
     else if (stepName === "科研处审核") newStatus = "RESEARCH_APPROVED";
