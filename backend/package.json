@@ -12,6 +12,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "verify:handoff": "tsx prisma/verify-handoff.ts",
     "verify:access": "prisma generate --schema=prisma/verify-access-schema.prisma && tsx prisma/verify-access-linkage.ts",
+    "verify:suggest-baseline": "tsx prisma/verify-suggest-baseline.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

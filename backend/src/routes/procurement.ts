@@ -9,6 +9,16 @@ import { z } from "zod";
 export const procurementRouter = Router();
 procurementRouter.use(authRequired);
 
+// 历史使用记录不足时的最小月用量基线（单位与 chemical.unit 保持一致，默认 mL）。
+// 原因：仅基于过去 90 天使用流水估算月用量，会让两类场景被严重低估——
+//   1) 全新研究方向、新引进的试剂，学院历史无任何流水，`_sum.qty` 为 0；
+//   2) 历史使用记录稀少的试剂，仅有零星试用，算出的月用量远低于真实需求。
+// 仅在这两类情况下直接拿 0/极小值做后续 targetStock 计算，会让建议采购量为 0
+// 或个位数，设备秘书按建议量提交后实际领用时频繁断档，影响实验进度。
+// 兜底基线取经验值 200，能覆盖「首次少量试用 + 1~2 个月安全库存」的场景，
+// 同时仍受 chemical.monthlyLimit / purchaseLimit 上限约束，不会越过监管红线。
+const MIN_BASELINE_MONTHLY_USAGE = 200;
+
 // 智能建议采购量
 procurementRouter.post("/suggest", async (req, res, next) => {
   try {
@@ -24,16 +34,19 @@ procurementRouter.post("/suggest", async (req, res, next) => {
         where: { chemicalId: cid, locationOrgId: { in: orgIds }, status: "IN_STORAGE" },
       });
       const inStock = stock._sum.remainingQty || 0;
-      // 估算月用量：基于过去 90 天使用记录
+      // 估算月用量：基于过去 90 天使用记录；
+      // 历史记录不足（0 或极小值）时回落到最小基线，避免建议量为 0 导致断档。
       const usage = await prisma.usageLog.aggregate({
         _sum: { qty: true },
         where: { bottle: { chemicalId: cid } },
       });
-      const monthlyUsage = (usage._sum.qty || 0) / 3 || 1000;
+      const historicalMonthly = (usage._sum.qty || 0) / 3;
+      const monthlyUsage = Math.max(historicalMonthly, MIN_BASELINE_MONTHLY_USAGE);
       const monthlyLimit = chem.monthlyLimit || Number.MAX_SAFE_INTEGER;
       const purchaseLimit = chem.purchaseLimit || Number.MAX_SAFE_INTEGER;
       const targetStock = monthlyUsage * 1.5;
       const suggested = Math.max(0, Math.min(targetStock - inStock, monthlyLimit, purchaseLimit));
+      const usedBaseline = historicalMonthly < MIN_BASELINE_MONTHLY_USAGE;
       result.push({
         chemicalId: cid,
         name: chem.name,
@@ -45,6 +58,9 @@ procurementRouter.post("/suggest", async (req, res, next) => {
         overLimit: suggested >= monthlyLimit || suggested >= purchaseLimit,
         monthlyLimit,
         purchaseLimit,
+        // 标记是否触发了基线兜底，便于设备秘书理解建议来源（前端可选择展示）
+        usedBaseline,
+        baselineMonthlyUsage: usedBaseline ? MIN_BASELINE_MONTHLY_USAGE : null,
       });
     }
     res.json(ok(result));
